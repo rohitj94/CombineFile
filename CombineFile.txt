@@ -1,0 +1,149 @@
+import org.apache.hadoop.mapreduce.InputSplit;
+import org.apache.hadoop.mapreduce.Mapper;
+import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
+import org.apache.hadoop.mapreduce.lib.input.MultipleInputs;
+import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+import org.apache.hadoop.mapreduce.lib.output.SequenceFileOutputFormat;
+import org.apache.hadoop.util.Tool;
+import org.apache.hadoop.util.ToolRunner;
+import org.apache.hadoop.mapreduce.*;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.io.NullWritable;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.io.BytesWritable;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.*;
+import org.apache.commons.io.IOUtils;
+import org.apache.hadoop.conf.*;
+
+import java.io.IOException;
+import java.io.*;
+
+import org.apache.hadoop.mapreduce.lib.input.FileSplit;
+
+public class CombineFiles extends Configured implements Tool{
+
+	static class CombineFilesMapper extends Mapper<NullWritable,BytesWritable,Text,BytesWritable>
+	{
+		Text FileKey;
+		
+		protected void setup(Context context)
+		{
+			InputSplit inputSplit = context.getInputSplit();
+			Path file=((FileSplit)inputSplit).getPath();
+			FileKey = new Text(file.toString());
+		}
+		
+		protected void map(NullWritable key,BytesWritable values,Context context) 
+				throws IOException, InterruptedException
+		{
+			context.write(FileKey,values);
+		}			
+	}
+	
+	static class CombineFilesInputFormat extends FileInputFormat<NullWritable,BytesWritable>
+	{
+		protected boolean isSplittable(JobContext context, Path file)
+		{
+			return false;
+		}
+		public RecordReader<NullWritable,BytesWritable> createRecordReader(InputSplit inputSplit, TaskAttemptContext context)
+		throws IOException, InterruptedException
+		{
+			CombineFilesRecordReader reader = new CombineFilesRecordReader();
+			reader.initialize(inputSplit, context);
+			return reader;
+		}
+	}
+	
+	static class CombineFilesRecordReader extends RecordReader<NullWritable, BytesWritable>
+	{
+		private FileSplit fileSplit;
+		private Configuration conf;
+		private boolean processed = false;
+		private BytesWritable bytes = new BytesWritable();
+		
+		public void initialize(InputSplit inputSplit, TaskAttemptContext context)
+		throws IOException, InterruptedException
+		{
+			fileSplit = (FileSplit)inputSplit;
+			conf = context.getConfiguration();
+		}	
+		public boolean nextKeyValue() throws IOException, InterruptedException
+		{
+			if(!processed)
+			{
+				 byte[] content = new byte[(int)fileSplit.getLength()];
+				 Path file = fileSplit.getPath();
+				 FileSystem fs = file.getFileSystem(conf);
+				 FSDataInputStream in = null;
+				 try
+				 {
+					 in = fs.open(file);
+					 IOUtils.readFully(in,content,0,content.length);
+					 bytes.set(content,0,content.length);
+				 }
+				 finally
+				 {}
+				 processed = true;
+				 return true;
+			}
+			
+			else
+				 return false;
+		}
+		
+		public NullWritable getCurrentKey() throws IOException, InterruptedException
+		{
+			return NullWritable.get();
+		}
+		
+		public BytesWritable getCurrentValue() throws IOException, InterruptedException
+		{
+			return bytes;
+		}
+		
+		public float getProgress() throws IOException
+		{
+		  return processed ? 0f : 1f;	
+		}
+		public void close() throws IOException
+		{
+			
+		}
+	}
+	public static void main(String args[]) throws Exception
+	{
+		int exitCode = ToolRunner.run(new CombineFiles(),args);
+		System.exit(exitCode);
+	}
+	public int run(String args[]) throws Exception
+	{
+		Path first = new Path(args[0]);
+		Path second = new Path(args[1]);
+		Path outputPath = new Path(args[2]);
+		
+		Job job = new Job(new Configuration());
+		
+		job.setJarByClass(CombineFiles.class);
+		
+		FileInputFormat.setInputPaths(job,first,second);
+		
+		job.setInputFormatClass(CombineFilesInputFormat.class);
+		job.setOutputFormatClass(SequenceFileOutputFormat.class);
+		job.setOutputKeyClass(Text.class);
+		job.setOutputValueClass(BytesWritable.class);
+		job.setMapperClass(CombineFilesMapper.class);
+		
+        FileOutputFormat.setOutputPath(job, outputPath);
+        
+        Path p = new Path(args[2]);
+        p.getFileSystem(new Configuration()).delete(p);
+        
+		return job.waitForCompletion(true)?0:1;
+}
+}
+
+Execution :
+
+
